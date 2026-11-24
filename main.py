@@ -13,6 +13,7 @@ Funny (a person returned like a defective purchase) and painfully honest
 import os
 import stat
 import sys
+import tempfile
 
 WORD = "refunded"
 
@@ -44,43 +45,55 @@ def _clean_output_dir(out_dir):
             os.unlink(path)
 
 
+def _validate_word(word):
+    """The entry must be exactly one word: 1-24 chars, no whitespace."""
+    if not word or len(word) > 24:
+        raise SystemExit("entry word must be 1-24 characters")
+    if any(ch.isspace() for ch in word):
+        raise SystemExit("entry must be a single word with no spaces")
+
+
 def main():
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     _clean_output_dir(out_dir)
 
-    # Validate the entry: exactly one word, no whitespace, 1-24 chars.
-    if not WORD or len(WORD) > 24:
-        raise SystemExit("entry word must be 1-24 characters")
-    if any(ch.isspace() for ch in WORD):
-        raise SystemExit("entry must be a single word with no spaces")
+    _validate_word(WORD)
 
     data = WORD.encode("utf-8")
     final_path = os.path.join(out_dir, "entry.txt")
-    tmp_path = os.path.join(out_dir, ".entry.txt.tmp")
 
     for attempt in range(3):
+        fd = None
+        tmp_path = None
         try:
-            # Remove any stale temp file from a previous attempt.
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            # mkstemp inside the try: each attempt gets a unique temp file
+            # (O_EXCL by construction), so a stale temp from a crashed run
+            # can never collide with or be mistaken for this attempt's file.
+            fd, tmp_path = tempfile.mkstemp(
+                dir=out_dir, prefix=".entry.txt.", suffix=".tmp"
+            )
             try:
                 os.chmod(tmp_path, 0o644)
                 _write_all(fd, data)
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            os.chmod(tmp_path, 0o644)
+                fd = None
             os.replace(tmp_path, final_path)
+            tmp_path = None  # consumed by the rename; nothing to clean up
             os.chmod(final_path, 0o644)
             break
         except OSError:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except FileNotFoundError:
+                    pass
             if attempt == 2:
                 raise
 
